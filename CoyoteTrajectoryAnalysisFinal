@@ -1,0 +1,954 @@
+#Independent Research Project - Trajectory analysis
+
+#GPS tracking data of 2 coyotes from washington, just northwest of Spokane
+
+
+setwd("~/Documents/Advanced GIS/Independent Research Project/Other attribute data-bobcats")
+install.packages('adehabitatLT')
+install.packages('lubridate')
+install.packages('sf')
+install.packages('ggplot2')
+install.packages('grid')
+install.packages('gridExtra')
+install.packages('circular')
+install.packages('dplyr')
+
+# Run this if you have already installed the packages 
+library(adehabitatLT) # for analysing trajectories
+library(lubridate) # for processing time
+library(sf) # for dealing with spatial data
+library(ggplot2) # for making nice figures
+library(grid) # for creating grids in figures
+library(gridExtra) # for creating grids in figures
+library(circular) # for circular statistics of turning angles and heading
+library(dplyr) #for duplicates 
+
+# Read data
+coyotes <- read.csv('NSpokane_coyotes_sept_dec_2019.csv')
+#events with a local error numerical value were removed
+#local error numerical and mortality columns were then removed 
+
+##remove poor quality data
+
+# Unique individuals
+individuals <- unique(coyotes$individual.local.identifier)
+individuals
+#these were the individuals I expected
+
+# Check which rows have NA values in coordinates
+NAPoints <- which(is.na(coyotes$location.lat) | is.na(coyotes$location.long))
+#there are none
+
+#NA points in gps.satellite.count
+NAPointsGPS <- which(is.na(coyotes$gps.satellite.count))
+#removing them
+coyotes <- coyotes[-NAPointsGPS,]
+
+
+# How many satellites are visible - check min and max of the attribute
+min(coyotes$gps.satellite.count)
+max(coyotes$gps.satellite.count)
+#all set here 
+
+
+#I already examined which individuals had data available for which years using QGIS and excel 
+#now we just need to prep the temporal attributes 
+#two ways to deal with  time in trajectories; we will use POSIX here
+#removing seconds because those are not included in the data 
+coyotes$POSIX <- as.POSIXct(coyotes$timestamp, format="%m/%d/%y %H:%M")
+head(coyotes)
+tail(coyotes)
+
+
+#checking for duplicates 
+duplics <- which(duplicated(coyotes$POSIX)==TRUE)
+# but instead of showing true duplicates it shows all of the timestamps that are repeated, 
+#without taking into account that these timestamps are assigned to different individuals and therefore are unique
+#we must build the spatial data frame first
+
+
+#####prepping geographic coordinates ########
+# Convert the coyotes data frame into an sf object by specifying which columns are coordinates
+# Also specify coordinate system, which in our case is EPSG:4326  WGS1984 
+coyotesSF <- st_as_sf(coyotes, coords=c('location.long','location.lat'), crs=4326)
+coyotesSF
+
+# Define new projection
+crsnew <- st_crs("EPSG:26911")
+
+# Transform data into the new coordinate system
+coyotesSF_proj <- st_transform(coyotesSF,crs=crsnew)
+head(coyotesSF_proj)
+
+# Read X an Y from geometry column as separate coordinates
+coyotesSF_proj$X <- st_coordinates(coyotesSF_proj)[,1]  
+coyotesSF_proj$Y <- st_coordinates(coyotesSF_proj)[,2]
+
+# Drop geometry column
+coyotesSF_proj <- st_drop_geometry(coyotesSF_proj)
+head(coyotesSF_proj)
+
+# First turn the SF into a data frame
+coyotes_cleanedDF <- as.data.frame(coyotesSF_proj)
+
+# Now save this into a csv file, giving the name of the projection in the filename
+write.csv(coyotes_cleanedDF, 'coyotes_CleanData_projected_EPSG26911.csv')
+#this csv is what we will read in from the beginning for Task 2
+
+
+#duplicates still...
+duplicates <- coyotesSF_proj %>%
+  group_by(individual.local.identifier, POSIX) %>%
+  filter(n() > 1)
+
+print(duplicates)
+#and now we see no duplicates 
+
+
+
+#### Step 2: Plot distributions and calculate mean and standard deviation of segment duration, length and speed for all five individuals
+
+# Create a set of trajectories, one per each coyote
+coyotes_ltraj <- as.ltraj(xy=coyotesSF_proj[,c('X','Y')],  # spatial Coordinates
+                          date = coyotesSF_proj$POSIX,      # timestamp in POSIX format, including date/time
+                          id = coyotesSF_proj$individual.local.identifier)                # individual IDs
+
+# plotting trajectories to check
+plot(coyotes_ltraj)
+dev.off() #keep the rstudio graphics device from acting up
+plot(coyotes_ltraj)
+
+#to measure the specifics of each coyote
+coyote1 <- coyotes_ltraj[[1]]
+coyote2 <- coyotes_ltraj[[2]]
+
+
+
+# Building a ggplot histogram for time difference
+
+# but first removing the last row of the trajectory, which has NA values (this will mess up the plots otherwise)
+
+
+# For coyote 1
+# Checking to see if there are NAs:
+tail(coyote1)
+
+# And now let's remove that row.
+nrows <- nrow(coyote1) # find number of rows for this trajectory
+coyote1 <- coyote1[-nrows,] # remove the last row, i.e. row no. nrows
+tail(coyote1)
+
+# Histogram of segment duration (dt)
+ggplot(coyote1, aes(x=dt)) + geom_histogram()
+
+
+#Here we can tell given the spread that there must a outlier
+#we use a boxplot to take a closer look 
+ggplot(coyote1, aes(x=dt))+geom_boxplot()
+
+#cut out outliers past 2000
+#coyote1 <- coyote1[-which(coyote1$dt>2000),] 
+
+# check
+#ggplot(coyote1, aes(x=dt))+geom_boxplot()
+#that cleaned things up 
+
+
+
+
+
+ggplot(coyote1, aes(x=dt)) + geom_histogram(binwidth=1000) +
+  theme_bw() + 
+  xlab("Segment duration (s)") + 
+  ylab("Count") + 
+  ggtitle("Segment Duration for Coyote 1")
+
+# Histogram of segment length (dist)
+ggplot(coyote1, aes(x=dist)) + geom_histogram()
+
+ggplot(coyote1, aes(x=dist)) + geom_histogram(binwidth=100) +
+  theme_bw() + 
+  xlab("Segment length (m)") + 
+  ylab("Count") + 
+  ggtitle("Segment Length for Coyote 1")
+
+# Calculate speed in m/s
+coyote1$speedMS <- coyote1$dist / coyote1$dt
+
+# Convert to km/h
+coyote1$speedKmH <- coyote1$speedMS * 3.6
+
+# Plot of speed in km/h
+ggplot(coyote1, aes(x=speedKmH)) + geom_histogram() +
+  theme_bw() + 
+  xlab("Speed (km/h)") + 
+  ylab("Count") + 
+  ggtitle("Speed for Coyote 1")
+
+ggplot(coyote1, aes(x=speedKmH)) + geom_histogram(binwidth=.01) +
+  theme_bw() + 
+  xlab("Speed (km/h)") + 
+  ylab("Count") + 
+  ggtitle("Speed for Coyote 1")
+
+# To export plots in grid 
+duration_plot <- ggplot(coyote1, aes(x=dt)) + geom_histogram(binwidth=) +
+  theme_bw() + 
+  xlab("Segment duration (s)") + 
+  ylab("Count") + 
+  ggtitle("Segment Duration for Coyote 1")
+
+length_plot <- ggplot(coyote1, aes(x=dist)) + geom_histogram(binwidth=) +
+  theme_bw() + 
+  xlab("Segment length (m)") + 
+  ylab("Count") + 
+  ggtitle("Segment Length for Coyote 1")
+
+speed_plot <- ggplot(coyote1, aes(x=speedKmH)) + geom_histogram(binwidth=) +
+  theme_bw() + 
+  xlab("Speed (km/h)") + 
+  ylab("Count") + 
+  ggtitle("Speed for Coyote 1")
+
+# Export into figure:
+png(filename="Coyote1_Duration_Length_Speed.png")
+# Put the three plots in a gridded display with 3 rows and 1 column
+grid.newpage()
+pushViewport(viewport(layout=grid.layout(3,1)))
+print(duration_plot, vp=viewport(layout.pos.col = 1, layout.pos.row = 1))
+print(length_plot, vp=viewport(layout.pos.col = 1, layout.pos.row = 2))
+print(speed_plot, vp=viewport(layout.pos.col = 1, layout.pos.row = 3))
+dev.off()
+
+
+# For coyote 2
+# Checking to see if there are NAs:
+tail(coyote2)
+
+# And now let's remove that row.
+nrows <- nrow(coyote2) # find number of rows for this trajectory
+coyote2 <- coyote2[-nrows,] # remove the last row, i.e. row no. nrows
+tail(coyote2)
+
+# Histogram of segment duration (dt)
+ggplot(coyote2, aes(x=dt)) + geom_histogram()
+
+
+#Here we can tell given the spread that there must a outlier
+#we use a boxplot to take a closer look 
+ggplot(coyote2, aes(x=dt))+geom_boxplot()
+
+
+
+
+ggplot(coyote2, aes(x=dt)) + geom_histogram(binwidth=1000) +
+  theme_bw() + 
+  xlab("Segment duration (s)") + 
+  ylab("Count") + 
+  ggtitle("Segment Duration for Coyote 2")
+
+# Histogram of segment length (dist)
+ggplot(coyote2, aes(x=dist)) + geom_histogram()
+
+ggplot(coyote2, aes(x=dist)) + geom_histogram(binwidth=100) +
+  theme_bw() + 
+  xlab("Segment length (m)") + 
+  ylab("Count") + 
+  ggtitle("Segment Length for Coyote 2")
+
+# Calculate speed in m/s
+coyote2$speedMS <- coyote2$dist / coyote2$dt
+
+# Convert to km/h
+coyote2$speedKmH <- coyote2$speedMS * 3.6
+
+# Plot of speed in km/h
+ggplot(coyote2, aes(x=speedKmH)) + geom_histogram() +
+  theme_bw() + 
+  xlab("Speed (km/h)") + 
+  ylab("Count") + 
+  ggtitle("Speed for Coyote 2")
+
+ggplot(coyote2, aes(x=speedKmH)) + geom_histogram(binwidth=.01) +
+  theme_bw() + 
+  xlab("Speed (km/h)") + 
+  ylab("Count") + 
+  ggtitle("Speed for Coyote 2")
+
+# To export plots in grid 
+duration_plot <- ggplot(coyote1, aes(x=dt)) + geom_histogram(binwidth=) +
+  theme_bw() + 
+  xlab("Segment duration (s)") + 
+  ylab("Count") + 
+  ggtitle("Segment Duration for Coyote 1")
+
+length_plot <- ggplot(coyote1, aes(x=dist)) + geom_histogram(binwidth=) +
+  theme_bw() + 
+  xlab("Segment length (m)") + 
+  ylab("Count") + 
+  ggtitle("Segment Length for Coyote 1")
+
+speed_plot <- ggplot(coyote1, aes(x=speedKmH)) + geom_histogram(binwidth=) +
+  theme_bw() + 
+  xlab("Speed (km/h)") + 
+  ylab("Count") + 
+  ggtitle("Speed for Coyote 1")
+
+# Export into figure:
+png(filename="Coyote1_Duration_Length_Speed.png")
+# Put the three plots in a gridded display with 3 rows and 1 column
+grid.newpage()
+pushViewport(viewport(layout=grid.layout(3,1)))
+print(duration_plot, vp=viewport(layout.pos.col = 1, layout.pos.row = 1))
+print(length_plot, vp=viewport(layout.pos.col = 1, layout.pos.row = 2))
+print(speed_plot, vp=viewport(layout.pos.col = 1, layout.pos.row = 3))
+dev.off()
+
+
+
+
+
+
+
+ 
+
+# Calculate mean values of duration, lenght and speed for coyote 1
+# Remember, data for coyote 1 is accessible as the first element of the coyotes_ltraj list:
+coyotes_ltraj[[1]]
+# This is what we will use to calculate statistics
+
+# assign the data to a generic variable we will use in the for loop
+thiscoyote <- coyotes_ltraj[[1]]
+
+# need to calculate speed for all
+thiscoyote$speedKmH <- (thiscoyote$dist/thiscoyote$dt)*3.6 #3.6 converts meters per second (m/s) to kilometers per hour (km/h)
+
+# get rid of all NA values in the respective columns
+dtNAs <- which(is.na(thiscoyote$dt)==TRUE | is.na(thiscoyote$dist)==TRUE | is.na(thiscoyote$speedKmH)==TRUE)
+# We remove rows with NAs
+thiscoyote <- thiscoyote[-dtNAs,]
+
+# calculate statistics for this coyote
+dt_mean <- mean(thiscoyote$dt)
+dt_std <- sd(thiscoyote$dt)
+dist_mean <- mean(thiscoyote$dist)
+dist_std <- sd(thiscoyote$dist)
+speedKmH_mean <- mean(thiscoyote$speedKmH)
+speedKmH_std <- sd(thiscoyote$speedKmH)
+
+
+
+# Part 2: Initialise data frame for results: we want one that will have as many rows as there are individual coyotes, plus columns for ID and all the statistics (7 columns in total).
+
+# building a data frame with NA of the correct size 
+results <- data.frame(matrix(NA, ncol = 7, nrow = length(individuals))) 
+
+# add names to columns
+columnNames <- c("ID","dt_mean","dt_std","dist_mean","dist_std","speedKmH_mean","speedKmH_std")
+names(results) <- columnNames
+
+# Check 
+results
+
+# Before writing the loop we can also populate the ID column directly, this can be done using the function id from adehabitatLT
+# Check:
+id(coyotes_ltraj)
+#got an error giving me noise about this 
+
+# assign this to results:
+results$ID <- id(coyotes_ltraj)
+
+# Check 
+results
+
+# Step 3: For loop to calculate all the statistics
+
+for (i in 1:length(individuals)) {
+  
+  # code from step 1, but with index i
+  
+  # assign the data to a generic variable to use in the for loop
+  thiscoyote <- coyotes_ltraj[[i]] 
+  
+  thiscoyote$speedKmH <- (thiscoyote$dist/thiscoyote$dt)*3.6
+  
+  dtNAs <- which(is.na(thiscoyote$dt)==TRUE | is.na(thiscoyote$dist)==TRUE | is.na(thiscoyote$speedKmH)==TRUE)
+  thiscoyote <- thiscoyote[-dtNAs,]
+  
+  results$dt_mean[i] <- mean(thiscoyote$dt)
+  results$dt_std[i] <- sd(thiscoyote$dt)
+  results$dist_mean[i] <- mean(thiscoyote$dist)
+  results$dist_std[i] <- sd(thiscoyote$dist)
+  results$speedKmH_mean[i] <- mean(thiscoyote$speedKmH)
+  results$speedKmH_std[i] <- sd(thiscoyote$speedKmH)
+  
+} # end for 
+
+# pull results
+results
+
+
+
+
+
+#####Part 2 - Net Squared Displacement#####
+
+# add two columns to results data frame 
+results$R2n_mean <- NA
+results$R2n_std <- NA
+# Check
+results
+
+
+# for loop to populate these two columns
+
+for (i in 1:length(individuals)) {
+  
+  # Assign data to the generic variable
+  thiscoyote <- coyotes_ltraj[[i]] 
+  
+  # Then we need to get rid of all NA values in the respective column
+  R2nNAs <- which(is.na(thiscoyote$R2n)==TRUE)
+  
+  # If statement: if there are some NAs, we remove them, if not, we don't do anything.
+  if (length(R2nNAs)>0) {
+    thiscoyote <- thiscoyote[-R2nNAs,]
+  }
+  
+  # calculate statistics and put them into the results data frame, in row i
+  results$R2n_mean[i] <- mean(thiscoyote$R2n)
+  results$R2n_std[i] <- sd(thiscoyote$R2n)
+  
+} # end for 
+
+# Check 
+results
+
+
+#now plotting the R2n
+
+# Coyote 1 
+ggplot(coyotes_ltraj[[1]], aes(x=date, y=R2n)) + geom_point(color = "darkred") + 
+  theme_bw()+xlab("Date")+ylab("R2n")+ggtitle("Net square displacement over time for coyote 1")
+
+# Coyote 2 
+ggplot(coyotes_ltraj[[2]], aes(x=date, y=R2n)) + geom_point(color = "darkred") + 
+  theme_bw()+xlab("Date")+ylab("R2n")+ggtitle("Net square displacement over time for coyote 2")
+
+
+#export
+coyote1_netsquared <- ggplot(coyotes_ltraj[[1]], aes(x=date, y=R2n)) + geom_point() + 
+  theme_bw()+xlab("Date")+ylab("R2n")+ggtitle("Net square displacement over time for coyote 1")
+
+coyote2_netsquared <- ggplot(coyotes_ltraj[[2]], aes(x=date, y=R2n)) + geom_point() + 
+  theme_bw()+xlab("Date")+ylab("R2n")+ggtitle("Net square displacement over time for coyote 2")
+
+
+# Export into figure:
+png(filename="Coyote_NetSquared_Plots.png")
+# Put the three plots in a gridded display with 3 rows and 2 column
+
+grid.newpage()
+pushViewport(viewport(layout=grid.layout(3, 2)))
+
+print(coyote1_netsquared, vp=viewport(layout.pos.row = 1, layout.pos.col = 1))
+print(coyote2_netsquared, vp=viewport(layout.pos.row = 1, layout.pos.col = 2))
+
+dev.off()
+
+
+
+##### Part 3 - circular plots for turning angle and heading for all individuals and calculate their circular mean and circular sd  ######
+
+# coyote 1 
+thiscoyote <- coyotes_ltraj[[1]]
+
+# Convert relative angle from radians into degrees
+thiscoyote$turningAngle <- thiscoyote$rel.angle * 180 / pi
+# Check
+head(thiscoyote)
+
+# Build a circular plot
+angleplot <- ggplot(thiscoyote, aes(x=turningAngle)) + geom_histogram(binwidth=2, fill = "darkred", color = "black")+coord_polar(start = pi)+
+  theme_bw()+scale_x_continuous(limits = c(-180,180),breaks=c(-180,-90,0,90,180))+xlab("Turning Angle")+ylab("Count")+
+  ggtitle("Turning angle for coyote 1")
+
+# Export as a figure
+png(filename="coyote1_TurningAngle.png")
+print(angleplot)
+
+# Remove NAs 
+turnNAs <- which(is.na(thiscoyote$turningAngle)==TRUE)
+
+# If statement: if there are some NAs, we remove them, if not, we don't do anything.
+if (length(turnNAs)>0) {
+  thiscoyote <- thiscoyote[-turnNAs,]
+}
+
+# Calculate statistics - because angles are circular, we need to use circular mean and circular std, from package circular
+turningAngle_mean <- mean(circular(thiscoyote$turningAngle))
+turningAngle_std <- sd(circular(thiscoyote$turningAngle))
+
+# add two columns to results data frame
+results$turningAngle_mean <- NA
+results$turningAngle_std <- NA
+# Check 
+results
+
+
+# Update results data frame
+# Assuming results has an existing row for coyote 1
+results$turningAngle_mean[1] <- turningAngle_mean
+results$turningAngle_std[1] <- turningAngle_std
+
+# Check updated results
+print(results)
+
+
+# Coyote 2
+thiscoyote <- coyotes_ltraj[[2]]
+
+# Convert relative angle from radians into degrees
+thiscoyote$turningAngle <- thiscoyote$rel.angle * 180 / pi
+# Check
+head(thiscoyote)
+
+# Build a circular plot
+angleplot <- ggplot(thiscoyote, aes(x=turningAngle)) + geom_histogram(binwidth=2, fill="darkred", color = "black")+coord_polar(start = pi)+
+  theme_bw()+scale_x_continuous(limits = c(-180,180),breaks=c(-180,-90,0,90,180))+xlab("Turning Angle")+ylab("Count")+
+  ggtitle("Turning angle for coyote 1")
+
+# Export as a figure
+png(filename="Coyote2_TurningAngle.png")
+print(angleplot)
+
+# Remove NAs 
+turnNAs <- which(is.na(thiscoyote$turningAngle)==TRUE)
+
+# If statement: if there are some NAs, we remove them, if not, we don't do anything.
+if (length(turnNAs)>0) {
+  thiscoyote <- thiscoyote[-turnNAs,]
+}
+
+# Calculate statistics - because angles are circular, we need to use circular mean and circular std, from package circular
+turningAngle_mean <- mean(circular(thiscoyote$turningAngle))
+turningAngle_std <- sd(circular(thiscoyote$turningAngle))
+
+
+# Update results data frame
+# Assuming results has an existing row for coyote 1
+results$turningAngle_mean[2] <- turningAngle_mean
+results$turningAngle_std[2] <- turningAngle_std
+
+# Check updated results
+print(results)
+
+
+
+
+
+
+
+
+
+
+######the heading (the angle of the compass direction of movement)######
+
+thiscoyote <- coyotes_ltraj[[1]]
+
+# Check for x and y coordinates
+head(thiscoyote)
+
+# called x and y. 
+
+# need to know the number of points in the trajectory, by checking the length of one of the coordinates
+nPoints <- length(thiscoyote$x)
+
+# add a new field for the heading to thiscoyote data frame
+thiscoyote$heading <- NA
+
+# For loop through the trajectory, but not to the end, we skip the final point!
+
+for (i in 1:(nPoints-1)) {
+  
+  # read the coordinates from two consecutive points, i and i+1
+  x1 <- thiscoyote$x[i]
+  x2 <- thiscoyote$x[i+1]
+  y1 <- thiscoyote$y[i]
+  y2 <- thiscoyote$y[i+1]
+  
+  # calculate the heading as arctan of the two values, plus convert to degrees
+  thiscoyote$heading[i] <- atan2((x2-x1),(y2-y1)) * 180 / pi
+  
+}
+
+# Build a circular plot
+angleplot <- ggplot(thiscoyote, aes(x=heading)) + geom_histogram(binwidth=2, fill = "darkred", color = "black")+coord_polar(start = pi)+
+  theme_bw()+scale_x_continuous(limits = c(-180,180),breaks=c(-180,-90,0,90,180))+
+  xlab("Heading")+ylab("Count")+ggtitle("Heading for coyote 1")
+
+# Export as a figure
+png(filename="Coyote1_Heading.png")
+print(angleplot)
+
+# Remove NAs - there will be at least one, for the last point through which we didn't loop
+headingNAs <- which(is.na(thiscoyote$heading)==TRUE)
+
+# If there are some NAs, we remove them, if not, we don't do anything.
+if (length(headingNAs)>0) {
+  thiscoyote <- thiscoyote[-headingNAs,]
+}
+
+# Calculate statistics - because angles are circular, we need to use circular mean and circular std, from package circular
+heading_mean <- mean(circular(thiscoyote$heading))
+heading_std <- sd(circular(thiscoyote$heading))
+
+
+# add two columns to the results data frame 
+results$heading_mean <- NA
+results$heading_std <- NA
+# Check what happened
+results
+
+# Update results data frame
+# Assuming results has an existing row for coyote 1
+results$heading_mean[1] <- heading_mean
+results$heading_std[1] <- heading_std
+
+# Check updated results
+print(results)
+
+
+#heading for coyote 2 
+thiscoyote <- coyotes_ltraj[[2]]
+
+# Check for x and y coordinates
+head(thiscoyote)
+
+# called x and y. 
+
+# need to know the number of points in the trajectory, by checking the length of one of the coordinates
+nPoints <- length(thiscoyote$x)
+
+# add a new field for the heading to thiscoyote data frame
+thiscoyote$heading <- NA
+
+# For loop through the trajectory, but not to the end, we skip the final point!
+
+for (i in 1:(nPoints-1)) {
+  
+  # read the coordinates from two consecutive points, i and i+1
+  x1 <- thiscoyote$x[i]
+  x2 <- thiscoyote$x[i+1]
+  y1 <- thiscoyote$y[i]
+  y2 <- thiscoyote$y[i+1]
+  
+  # calculate the heading as arctan of the two values, plus convert to degrees
+  thiscoyote$heading[i] <- atan2((x2-x1),(y2-y1)) * 180 / pi
+  
+}
+
+# Build a circular plot
+angleplot <- ggplot(thiscoyote, aes(x=heading)) + geom_histogram(binwidth=2, fill = "darkred", color = "black")+coord_polar(start = pi)+
+  theme_bw()+scale_x_continuous(limits = c(-180,180),breaks=c(-180,-90,0,90,180))+
+  xlab("Heading")+ylab("Count")+ggtitle("Heading for coyote 2")
+
+# Export as a figure
+png(filename="Coyote2_Heading.png")
+print(angleplot)
+
+# Remove NAs - there will be at least one, for the last point through which we didn't loop
+headingNAs <- which(is.na(thiscoyote$heading)==TRUE)
+
+# If there are some NAs, we remove them, if not, we don't do anything.
+if (length(headingNAs)>0) {
+  thiscoyote <- thiscoyote[-headingNAs,]
+}
+
+# Calculate statistics - because angles are circular, we need to use circular mean and circular std, from package circular
+heading_mean <- mean(circular(thiscoyote$heading))
+heading_std <- sd(circular(thiscoyote$heading))
+
+# Check what happened
+results
+
+# Update results data frame
+# Assuming results has an existing row for coyote 1
+results$heading_mean[2] <- heading_mean
+results$heading_std[2] <- heading_std
+
+# Check updated results
+print(results)
+
+
+
+#### Part 4 - Radius of Gyration ####
+
+# Add a column for gyration to the results data frame
+results$gyration <- NA
+
+# For loop to calculate gyration for each individual
+for (i in 1:length(individuals)) {
+  
+  # Assign data to the generic variable
+  thiscoyote <- coyotes_ltraj[[i]] 
+  
+  # Find the number of points in this trajectory
+  noPoints <- length(thiscoyote$x)
+  
+  # Calculate the mean centre of all locations
+  centreX <- sum(thiscoyote$x) / noPoints
+  centreY <- sum(thiscoyote$y) / noPoints
+  
+  # Distance of each point to (centreX, centreY)
+  thiscoyote$distTocentre <- sqrt((centreX - thiscoyote$x)^2 + (centreY - thiscoyote$y)^2)
+  
+  # Check for NA values in the `distTocentre` column
+  distNAs <- which(is.na(thiscoyote$distTocentre) == TRUE)
+  
+  # If there are NAs, remove them
+  if (length(distNAs) > 0) {
+    thiscoyote <- thiscoyote[-distNAs,]
+  }
+  
+  # Calculate the radius of gyration
+  gyration <- sqrt(sum(thiscoyote$distTocentre) / noPoints)
+  
+  # Populate the gyration column in the results data frame
+  results$gyration[i] <- gyration
+  
+} # end for
+
+# Check the results
+results
+
+#time series plots of distance to the center for all 
+# Coyote 1
+thiscoyote <- coyotes_ltraj[[1]]
+noPoints <- length(thiscoyote$x)
+centreX <- sum(thiscoyote$x) / noPoints
+centreY <- sum(thiscoyote$y) / noPoints
+thiscoyote$distTocentre <- sqrt((centreX - thiscoyote$x)^2 + (centreY - thiscoyote$y)^2)
+
+gyration_plot_1 <- ggplot(thiscoyote, aes(x = date, y = distTocentre)) + geom_line(color = "darkred") + 
+  theme_bw() + xlab("Date") + ylab("Distance to Center (m)") + ggtitle("Distance to the Center for Coyote 1")
+print(gyration_plot_1)
+# Export as a figure
+png(filename="Coyote1_Gyration_TimeSeries.png")
+print(gyration_plot_1) 
+dev.off()
+
+
+# Coyote 2
+thiscoyote <- coyotes_ltraj[[2]]
+noPoints <- length(thiscoyote$x)
+centreX <- sum(thiscoyote$x) / noPoints
+centreY <- sum(thiscoyote$y) / noPoints
+thiscoyote$distTocentre <- sqrt((centreX - thiscoyote$x)^2 + (centreY - thiscoyote$y)^2)
+
+gyration_plot_2 <- ggplot(thiscoyote, aes(x = date, y = distTocentre)) + geom_line(color = "darkred") + 
+  theme_bw() + xlab("Date") + ylab("Distance to Center (m)") + ggtitle("Distance to the Center for Coyote 2")
+print(gyration_plot_2)
+png(filename="Coyote2_Gyration_TimeSeries.png")
+print(gyration_plot_2) 
+dev.off()
+
+
+##########PART TWO ###########
+#using the above libraries
+#library(adehabitatLT) # for ltraj objects
+#library(sf) # for dealing with spatial data
+#library(grid) # for creating grids in figures
+#library(gridExtra) # for creating grids in figures
+
+#and these new ones
+install.packages('adehabitatHR')
+install.packages('scales')
+install.packages('terra')
+
+library(adehabitatHR) # for space use
+library(scales) # makes polygons transparent in plotting
+library(terra) # for manipulating raster data
+library(adehabitatLT) # for ltraj objects
+
+coyotes <- read.csv('coyotes_CleanData_projected_EPSG26911.csv')
+head(coyotes)
+
+#to check for the names of columns with spatial coordinates
+names(coyotes)
+
+# They are called "X" and "Y"
+
+# selecting the important information from the dataset: gannet identifier, geographic and temporal attributes
+coyotes_sel <- cbind.data.frame(coyotes$individual.local.identifier, coyotes$X, coyotes$Y, coyotes$timestamp, coyotes$POSIX)
+# and to fix those column names
+names(coyotes_sel) <- c('ID','X','Y','timestamp','POSIX')
+
+#then we create an sf object, using the coordinate names and the projection (which we saved as part of filename)
+coyotes_sf <- st_as_sf(coyotes_sel, coords = c("X", "Y"), crs = 'EPSG:26911')
+
+# and finally it is transformed into a Spatial Data Points object
+coyotes_sp <- as_Spatial(coyotes_sf)
+
+
+
+
+########Part 1 - Calculate Minimum Convex Polygon#####
+# The mcp function needs to know which column of the input data is the ID of the animal - in our case
+# this is the first column. So this is what we specify in the call.
+# telling the mcp funtion which column the coyote ID is in - here it is in the first column
+# then calculating MCP for our coyotes looking at 95% of all points. 
+coyotes_mcp <- mcp(coyotes_sp[,1], percent = 95)
+
+# Examine output
+coyotes_mcp
+
+# plotting the MCPs
+plot(coyotes_mcp)
+
+#all the coyotes are visible together and fit a similar scale
+
+# plotting MCP for coyote 1 as a transparent polygon (set by parameter alpha)
+plot(coyotes_mcp, col = alpha(1:5, 0.5))
+# and then add the points
+points(coyotes_sp, col = as.factor(coyotes_sp@data$ID), pch = 16)
+dev.off()
+#to export all five MCPs as one .shp we first convert them in a sf object with st_as_sf
+st_write(st_as_sf(coyotes_mcp), "coyotes_mcp1.shp")
+
+#mapping work in QGIS happening from here
+
+
+
+###LoCoH
+# Run Adaptive LoCoH
+
+#didn't really end up using this bit 
+#Inspect the distances between points using the nearest-neighbor distances
+#using library(sp)
+dists <- spDists(coyotes_sp, longlat = FALSE)
+hist(dists, breaks = 50, main = "Histogram of Point Distances", xlab = "Distance")
+# Add x and y axes
+axis(1)  # Adds x-axis
+axis(2)  # Adds y-axis
+#end of 'this bit'
+
+
+
+# "ID" is in the first column, so we specify it in the grouping
+coyotes_alocoh <- LoCoH.a(coyotes_sp[,1], a = 4500) # adjust `a` parameter as needed
+
+#coyotes_mcp <- mcp(coyotes_sp[,1], percent = 95)
+
+
+# Examine the output
+summary(coyotes_alocoh)
+
+# Plot Adaptive LoCoH
+#plot(coyotes_mcp)
+
+plot(coyotes_alocoh)
+     #, col = rainbow(length(coyotes_alocoh$id)))
+
+
+#extra step needed to extract these hulls using the getverticeshr() function from the adehabitatHR package
+#library(adehabitatHR)
+
+# Extract the LoCoH hulls as SpatialPolygonsDataFrame
+coyotes_alocoh_spdf <- getverticeshr(coyotes_alocoh)
+
+
+
+
+plot(coyotes_alocoh_spdf, col = alpha(1:5, 0.5))
+# Add points to visualize original locations
+points(coyotes_sp, col = as.factor(coyotes_sp@data$ID), pch = 16)
+
+# Convert SpatialPolygonsDataFrame to sf object and write to a shapefile using sf library 
+st_write(st_as_sf(coyotes_alocoh_spdf), "coyotes_alocoh.shp")
+
+
+
+
+#####Part 2 - Calculating the home ranges and core areas from KDE density#####
+
+#to be able to identify specific gannets
+individuals <- unique(coyotes$individual.local.identifier)
+
+# Select only data of this gannet from the Spatial Data Points Object
+coyote1 <- coyotes_sp[which(as.data.frame(coyotes_sp)$ID==individuals[1]),]
+coyote2 <- coyotes_sp[which(as.data.frame(coyotes_sp)$ID==individuals[2]),]
+
+#first we optimize the bandwidth 
+
+#for coyote 1 
+# Calculate KDE using the reference bandwith
+kde_ref <- kernelUD(coyote1[,1],h='href')
+
+# Calculate KDE using the LSCV (least squares cross-validation) optimisation (this takes longer)
+kde_lscv <- kernelUD(coyote1[,1],h='LSCV')
+
+
+# plotting the two surfaces
+# The output is a list with one item per gannet, so we need to plot the first element of the list,indicated by double square brackets.
+# We are also choosing display colours, the terrain colours in this case
+#reference first 
+plot(kde_ref[[1]],col=rev(terrain.colors(n=100)))
+#then LSCV
+plot(kde_lscv[[1]],col=rev(terrain.colors(n=100)))
+
+# and plotting the optimisation graph
+plotLSCV(kde_lscv)
+
+
+
+
+### KDE with different values for grid and extent and plot the results
+
+#again, need to identify the ID column, the first column in coyote1_sp
+#same4all parameter = all surfaces should have the same extent
+#and smaller number of cells 
+#UD = Utilisation Distribution 
+coyotes_kde <- kernelUD(coyotes_sp[,1],h='href', grid=500, extent=0.2, same4all=TRUE)                          
+
+# Plot the result
+plot(coyotes_kde[[1]])
+
+plot(coyotes_kde[[2]])
+
+
+# Create rasters from the kde output using the rast function from package terra using for loop 
+for (i in 1:(length(individuals)-1)) {
+  # Create a raster
+  r <- rast(as(coyotes_kde[[i]], "SpatialPixelsDataFrame")) 
+  # Save it as geotiff
+  writeRaster(r, filename = paste('coyote',i+1,'_kde.tif',sep=""), overwrite=TRUE)
+}
+
+#home ranges and core areas from a KDE
+
+# The rest
+coyotes_kde_hr95 <- getverticeshr(coyotes_kde,percent=95)
+coyotes_kde_hr50 <- getverticeshr(coyotes_kde,percent=50)
+
+# plotting
+plot(coyotes_kde_hr95)
+plot(coyotes_kde_hr50)
+
+# The home ranges and core areas are SpatialPolgyonDataFrames, so we can export these as shapefiles.
+st_write(st_as_sf(coyotes_kde_hr95), "Coyotes_HR95.shp")
+st_write(st_as_sf(coyotes_kde_hr50), "Coyotes_HR50.shp")
+
+# outputs 
+coyotes_kde_hr95
+coyotes_kde_hr50
+
+# Convert to a data frame 
+coyotes_kde_hr50_df <- as.data.frame(coyotes_kde_hr50)
+write.csv(coyotes_kde_hr50_df, "coyotes_kde_hr50.csv", row.names = FALSE)
+
+# Convert to a data frame 
+coyotes_kde_hr95_df <- as.data.frame(coyotes_kde_hr95)
+write.csv(coyotes_kde_hr95_df, "coyotes_kde_hr95.csv", row.names = FALSE)
+
+#the end 
