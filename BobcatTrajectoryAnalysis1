@@ -1,0 +1,1037 @@
+###duplicate code for the bobcats from the coyote version 
+
+setwd("~/Documents/Advanced GIS/Independent Research Project/Other attribute data-bobcats")
+install.packages('adehabitatLT')
+install.packages('lubridate')
+install.packages('sf')
+install.packages('ggplot2')
+install.packages('grid')
+install.packages('gridExtra')
+install.packages('circular')
+install.packages('dplyr')
+
+# Run this if you have already installed the packages 
+library(adehabitatLT) # for analysing trajectories
+library(lubridate) # for processing time
+library(sf) # for dealing with spatial data
+library(ggplot2) # for making nice figures
+library(grid) # for creating grids in figures
+library(gridExtra) # for creating grids in figures
+library(circular) # for circular statistics of turning angles and heading
+library(dplyr) #for duplicates 
+
+# Read data
+bobcats <- read.csv('NSpokane_bobcats_sept_dec_2019.csv')
+#events with a local error numerical value were removed
+#local error numerical and mortality columns removed 
+
+##remove poor quality data
+
+# Unique individuals
+individuals <- unique(bobcats$individual.local.identifier)
+individuals
+#these were the individuals I expected
+
+# Check which rows have NA values in coordinates
+NAPoints <- which(is.na(bobcats$location.lat) | is.na(bobcats$location.long))
+#there are none
+
+#NA points in gps.satellite.count
+NAPointsGPS <- which(is.na(bobcats$gps.satellite.count))
+#there are none
+
+
+# How many satellites are visible - check min and max of the attribute
+min(bobcats$gps.satellite.count)
+max(bobcats$gps.satellite.count)
+#all set here - min = 5 and max = 11
+
+
+#two ways to deal with  time in trajectories
+## we just use the second here
+########check that this is the right one to use here#####
+
+#I already examined which individuals had data available for which years using QGIS and excel 
+#now we just need to prep the temporal attributes 
+#removing seconds because those are not included in the data 
+bobcats$POSIX <- as.POSIXct(bobcats$timestamp, format="%m/%d/%y %H:%M")
+head(bobcats)
+tail(bobcats)
+
+
+
+#checking for duplicates 
+duplics <- which(duplicated(bobcats$POSIX)==TRUE)
+# but instead of showing true duplicates it shows all of the timestamps that are repeated, 
+#without taking into account that these timestamps are assigned to different individuals and therefore are unique
+#we must build the spatial data frame first
+
+
+#prepping geographic coordinates 
+# Convert the bobcats data frame into an sf object by specifying which columns are coordinates
+# Also specify coordinate system, which in our case is EPSG:4326  WGS1984 
+bobcatsSF <- st_as_sf(bobcats, coords=c('location.long','location.lat'), crs=4326)
+bobcatsSF
+
+# Define new projection
+crsnew <- st_crs("EPSG:26911")
+
+# Transform data into the new coordinate system
+bobcatsSF_proj <- st_transform(bobcatsSF,crs=crsnew)
+head(bobcatsSF_proj)
+
+# Read X an Y from geometry column as separate coordinates
+bobcatsSF_proj$X <- st_coordinates(bobcatsSF_proj)[,1]  
+bobcatsSF_proj$Y <- st_coordinates(bobcatsSF_proj)[,2]
+
+# Drop geometry column
+bobcatsSF_proj <- st_drop_geometry(bobcatsSF_proj)
+head(bobcatsSF_proj)
+
+# First turn the SF into a data frame
+bobcats_cleanedDF <- as.data.frame(bobcatsSF_proj)
+
+# Now save this into a csv file, giving the name of the projection in the filename
+write.csv(bobcats_cleanedDF, 'bobcats_CleanData_projected_EPSG26911.csv')
+#this csv is what we will read in from the beginning for Task 2
+
+
+#duplicates still...
+duplicates <- bobcatsSF_proj %>%
+  group_by(individual.local.identifier, POSIX) %>%
+  filter(n() > 1)
+
+print(duplicates)
+#and now we see no duplicates 
+
+
+
+
+
+
+#### Step 2: Plot distributions and calculate mean and standard deviation of segment duration, length and speed for all five individuals
+
+# Create a set of trajectories, one per each bobcat
+bobcats_ltraj <- as.ltraj(xy=bobcatsSF_proj[,c('X','Y')],  # spatial Coordinates
+                          date = bobcatsSF_proj$POSIX,      # timestamp in POSIX format, including date/time
+                          id = bobcatsSF_proj$individual.local.identifier)                # individual IDs
+
+# plotting trajectories to check
+plot(bobcats_ltraj)
+dev.off() #keep the rstudio graphics device from acting up
+plot(bobcats_ltraj)
+
+#to measure the specifics of each bobcat
+bobcat1 <- bobcats_ltraj[[1]]
+bobcat2 <- bobcats_ltraj[[2]]
+bobcat3 <- bobcats_ltraj[[3]]
+
+
+# Building a ggplot histogram for time difference
+
+# but first removing the last row of the trajectory, which has NA values (this will mess up the plots otherwise)
+
+
+# For bobcat 1
+# Checking to see if there are NAs:
+tail(bobcat1)
+
+# And now let's remove that row.
+nrows <- nrow(bobcat1) # find number of rows for this trajectory
+bobcat1 <- bobcat1[-nrows,] # remove the last row, i.e. row no. nrows
+tail(bobcat1)
+
+# Histogram of segment duration (dt)
+ggplot(bobcat1, aes(x=dt)) + geom_histogram()
+
+
+#Here we can tell given the spread that there must a outlier
+#we use a boxplot to take a closer look 
+ggplot(bobcat1, aes(x=dt))+geom_boxplot()
+
+#cut out outliers past 2000
+#bobcat1 <- bobcat1[-which(bobcat1$dt>2000),] 
+
+# check
+#ggplot(bobcat1, aes(x=dt))+geom_boxplot()
+#that cleaned things up 
+
+
+
+
+
+ggplot(bobcat1, aes(x=dt)) + geom_histogram(binwidth=1000, fill = "darkred", color = "black") +
+  theme_bw() + 
+  xlab("Segment duration (s)") + 
+  ylab("Count") + 
+  ggtitle("Segment Duration for Bobcat 1")
+
+# Histogram of segment length (dist)
+ggplot(bobcat1, aes(x=dist)) + geom_histogram()
+
+ggplot(bobcat1, aes(x=dist)) + geom_histogram(binwidth=50, fill = "darkred", color = "black") +
+  theme_bw() + 
+  xlab("Segment length (m)") + 
+  ylab("Count") + 
+  ggtitle("Segment Length for Bobcat 1")
+
+# Calculate speed in m/s
+bobcat1$speedMS <- bobcat1$dist / bobcat1$dt
+
+# Convert to km/h
+bobcat1$speedKmH <- bobcat1$speedMS * 3.6
+
+# Plot of speed in km/h
+ggplot(bobcat1, aes(x=speedKmH)) + geom_histogram() +
+  theme_bw() + 
+  xlab("Speed (km/h)") + 
+  ylab("Count") + 
+  ggtitle("Speed for Bobcat 1")
+
+ggplot(bobcat1, aes(x=speedKmH)) + geom_histogram(binwidth=.01, fill = "darkred", color = "black") +
+  theme_bw() + 
+  xlab("Speed (km/h)") + 
+  ylab("Count") + 
+  ggtitle("Speed for Bobcat 1")
+
+# To export plots in grid 
+duration_plot <- ggplot(bobcat1, aes(x=dt)) + geom_histogram(binwidth=1000, fill = "darkred", color = "black") +
+  theme_bw() + 
+  xlab("Segment duration (s)") + 
+  ylab("Count") + 
+  ggtitle("Segment Duration for Bobcat 1")
+
+length_plot <- ggplot(bobcat1, aes(x=dist)) + geom_histogram(binwidth=50, fill = "darkred", color = "black") +
+  theme_bw() + 
+  xlab("Segment length (m)") + 
+  ylab("Count") + 
+  ggtitle("Segment Length for Bobcat 1")
+
+speed_plot <- ggplot(bobcat1, aes(x=speedKmH)) + geom_histogram(binwidth=.01, fill = "darkred", color = "black") +
+  theme_bw() + 
+  xlab("Speed (km/h)") + 
+  ylab("Count") + 
+  ggtitle("Speed for Bobcat 1")
+
+# Export into figure:
+png(filename="Bobcat1_Duration_Length_Speed.png")
+# Put the three plots in a gridded display with 3 rows and 1 column
+grid.newpage()
+pushViewport(viewport(layout=grid.layout(3,1)))
+print(duration_plot, vp=viewport(layout.pos.col = 1, layout.pos.row = 1))
+print(length_plot, vp=viewport(layout.pos.col = 1, layout.pos.row = 2))
+print(speed_plot, vp=viewport(layout.pos.col = 1, layout.pos.row = 3))
+dev.off()
+
+
+# For bobcat 2
+# Checking to see if there are NAs:
+tail(bobcat2)
+
+# And now let's remove that row.
+nrows <- nrow(bobcat2) # find number of rows for this trajectory
+bobcat2 <- bobcat2[-nrows,] # remove the last row, i.e. row no. nrows
+tail(bobcat2)
+
+# Histogram of segment duration (dt)
+ggplot(bobcat2, aes(x=dt)) + geom_histogram()
+
+
+#Here we can tell given the spread that there must a outlier
+#we use a boxplot to take a closer look 
+ggplot(bobcat2, aes(x=dt))+geom_boxplot()
+
+
+
+
+ggplot(bobcat2, aes(x=dt)) + geom_histogram(binwidth=1000, fill = "darkred", color = "black") +
+  theme_bw() + 
+  xlab("Segment duration (s)") + 
+  ylab("Count") + 
+  ggtitle("Segment Duration for Bobcat 2")
+
+# Histogram of segment length (dist)
+ggplot(bobcat2, aes(x=dist)) + geom_histogram()
+
+ggplot(bobcat2, aes(x=dist)) + geom_histogram(binwidth=50, fill = "darkred", color = "black") +
+  theme_bw() + 
+  xlab("Segment length (m)") + 
+  ylab("Count") + 
+  ggtitle("Segment Length for Bobcat 2")
+
+# Calculate speed in m/s
+bobcat2$speedMS <- bobcat2$dist / bobcat2$dt
+
+# Convert to km/h
+bobcat2$speedKmH <- bobcat2$speedMS * 3.6
+
+# Plot of speed in km/h
+ggplot(bobcat2, aes(x=speedKmH)) + geom_histogram() +
+  theme_bw() + 
+  xlab("Speed (km/h)") + 
+  ylab("Count") + 
+  ggtitle("Speed for Bobcat 2")
+
+ggplot(bobcat2, aes(x=speedKmH)) + geom_histogram(binwidth=.01, fill = "darkred", color = "black") +
+  theme_bw() + 
+  xlab("Speed (km/h)") + 
+  ylab("Count") + 
+  ggtitle("Speed for Bobcat 2")
+
+# To export plots in grid 
+duration_plot <- ggplot(bobcat2, aes(x=dt)) + geom_histogram(binwidth=1000, fill = "darkred", color = "black") +
+  theme_bw() + 
+  xlab("Segment duration (s)") + 
+  ylab("Count") + 
+  ggtitle("Segment Duration for Bobcat 2")
+
+length_plot <- ggplot(bobcat2, aes(x=dist)) + geom_histogram(binwidth=50, fill = "darkred", color = "black") +
+  theme_bw() + 
+  xlab("Segment length (m)") + 
+  ylab("Count") + 
+  ggtitle("Segment Length for Bobcat 2")
+
+speed_plot <- ggplot(bobcat2, aes(x=speedKmH)) + geom_histogram(binwidth=0.01, fill = "darkred", color = "black") +
+  theme_bw() + 
+  xlab("Speed (km/h)") + 
+  ylab("Count") + 
+  ggtitle("Speed for Bobcat 2")
+
+# Export into figure:
+png(filename="Bobcat2_Duration_Length_Speed.png")
+# Put the three plots in a gridded display with 3 rows and 1 column
+grid.newpage()
+pushViewport(viewport(layout=grid.layout(3,1)))
+print(duration_plot, vp=viewport(layout.pos.col = 1, layout.pos.row = 1))
+print(length_plot, vp=viewport(layout.pos.col = 1, layout.pos.row = 2))
+print(speed_plot, vp=viewport(layout.pos.col = 1, layout.pos.row = 3))
+dev.off()
+
+
+
+
+# For bobcat 3
+# Checking to see if there are NAs:
+tail(bobcat3)
+
+# And now let's remove that row.
+nrows <- nrow(bobcat3) # find number of rows for this trajectory
+bobcat3 <- bobcat3[-nrows,] # remove the last row, i.e. row no. nrows
+tail(bobcat3)
+
+# Histogram of segment duration (dt)
+ggplot(bobcat3, aes(x=dt)) + geom_histogram()
+
+
+#Here we can tell given the spread that there must a outlier
+#we use a boxplot to take a closer look 
+ggplot(bobcat3, aes(x=dt))+geom_boxplot()
+
+
+
+
+ggplot(bobcat3, aes(x=dt)) + geom_histogram(binwidth=1000, fill = "darkred", color = "black") +
+  theme_bw() + 
+  xlab("Segment duration (s)") + 
+  ylab("Count") + 
+  ggtitle("Segment Duration for Bobcat 3")
+
+# Histogram of segment length (dist)
+ggplot(bobcat2, aes(x=dist)) + geom_histogram()
+
+ggplot(bobcat3, aes(x=dist)) + geom_histogram(binwidth=50, fill = "darkred", color = "black") +
+  theme_bw() + 
+  xlab("Segment length (m)") + 
+  ylab("Count") + 
+  ggtitle("Segment Length for Bobcat 3")
+
+# Calculate speed in m/s
+bobcat3$speedMS <- bobcat3$dist / bobcat3$dt
+
+# Convert to km/h
+bobcat3$speedKmH <- bobcat3$speedMS * 3.6
+
+# Plot of speed in km/h
+ggplot(bobcat3, aes(x=speedKmH)) + geom_histogram() +
+  theme_bw() + 
+  xlab("Speed (km/h)") + 
+  ylab("Count") + 
+  ggtitle("Speed for Bobcat 3")
+
+ggplot(bobcat3, aes(x=speedKmH)) + geom_histogram(binwidth=.01, fill = "darkred", color = "black") +
+  theme_bw() + 
+  xlab("Speed (km/h)") + 
+  ylab("Count") + 
+  ggtitle("Speed for Bobcat 3")
+
+# To export plots in grid 
+duration_plot <- ggplot(bobcat3, aes(x=dt)) + geom_histogram(binwidth=1000, fill = "darkred", color = "black") +
+  theme_bw() + 
+  xlab("Segment duration (s)") + 
+  ylab("Count") + 
+  ggtitle("Segment Duration for Bobcat 3")
+
+length_plot <- ggplot(bobcat3, aes(x=dist)) + geom_histogram(binwidth=50, fill = "darkred", color = "black") +
+  theme_bw() + 
+  xlab("Segment length (m)") + 
+  ylab("Count") + 
+  ggtitle("Segment Length for Bobcat 3")
+
+speed_plot <- ggplot(bobcat3, aes(x=speedKmH)) + geom_histogram(binwidth=0.01, fill = "darkred", color = "black") +
+  theme_bw() + 
+  xlab("Speed (km/h)") + 
+  ylab("Count") + 
+  ggtitle("Speed for Bobcat 3")
+
+# Export into figure:
+png(filename="Bobcat3_Duration_Length_Speed.png")
+# Put the three plots in a gridded display with 3 rows and 1 column
+grid.newpage()
+pushViewport(viewport(layout=grid.layout(3,1)))
+print(duration_plot, vp=viewport(layout.pos.col = 1, layout.pos.row = 1))
+print(length_plot, vp=viewport(layout.pos.col = 1, layout.pos.row = 2))
+print(speed_plot, vp=viewport(layout.pos.col = 1, layout.pos.row = 3))
+dev.off()
+
+
+# Calculate mean values of duration, length, and speed for bobcat 1
+# Remember, data for bobcat 1 is accessible as the first element of the bobcats_ltraj list:
+bobcats_ltraj[[1]]
+# This is what we will use to calculate statistics
+
+# assign the data to a generic variable we will use in the for loop
+thisbobcat <- bobcats_ltraj[[1]]
+
+# need to calculate speed for all
+thisbobcat$speedKmH <- (thisbobcat$dist/thisbobcat$dt)*3.6 #3.6 converts meters per second (m/s) to kilometers per hour (km/h)
+
+# get rid of all NA values in the respective columns
+dtNAs <- which(is.na(thisbobcat$dt)==TRUE | is.na(thisbobcat$dist)==TRUE | is.na(thisbobcat$speedKmH)==TRUE)
+# We remove rows with NAs
+thisbobcat <- thisbobcat[-dtNAs,]
+
+# calculate statistics for this bobcat
+dt_mean <- mean(thisbobcat$dt)
+dt_std <- sd(thisbobcat$dt)
+dist_mean <- mean(thisbobcat$dist)
+dist_std <- sd(thisbobcat$dist)
+speedKmH_mean <- mean(thisbobcat$speedKmH)
+speedKmH_std <- sd(thisbobcat$speedKmH)
+
+
+# Part 2: Initialise data frame for results: we want one that will have as many rows as there are individual bobcats, plus columns for ID and all the statistics (7 columns in total).
+
+# building a data frame with NA of the correct size 
+results <- data.frame(matrix(NA, ncol = 7, nrow = length(individuals))) 
+
+# add names to columns
+columnNames <- c("ID","dt_mean","dt_std","dist_mean","dist_std","speedKmH_mean","speedKmH_std")
+names(results) <- columnNames
+
+# Check 
+results
+
+# Before writing the loop we can also populate the ID column directly, this can be done using the function id from adehabitatLT
+# Check:
+id(bobcats_ltraj)
+#got an error giving me noise about this 
+
+# assign this to results:
+results$ID <- id(bobcats_ltraj)
+
+# Check 
+results
+
+# Step 3: For loop to calculate all the statistics
+
+for (i in 1:length(individuals)) {
+  
+  # code from step 1, but with index i
+  
+  # assign the data to a generic variable to use in the for loop
+  thisbobcat <- bobcats_ltraj[[i]] 
+  
+  thisbobcat$speedKmH <- (thisbobcat$dist/thisbobcat$dt)*3.6
+  
+  dtNAs <- which(is.na(thisbobcat$dt)==TRUE | is.na(thisbobcat$dist)==TRUE | is.na(thisbobcat$speedKmH)==TRUE)
+  thisbobcat <- thisbobcat[-dtNAs,]
+  
+  results$dt_mean[i] <- mean(thisbobcat$dt)
+  results$dt_std[i] <- sd(thisbobcat$dt)
+  results$dist_mean[i] <- mean(thisbobcat$dist)
+  results$dist_std[i] <- sd(thisbobcat$dist)
+  results$speedKmH_mean[i] <- mean(thisbobcat$speedKmH)
+  results$speedKmH_std[i] <- sd(thisbobcat$speedKmH)
+  
+} # end for 
+
+# pull results
+results
+
+
+
+#####Part 2 - Net Squared Displacement#####
+
+# add two columns to results data frame 
+results$R2n_mean <- NA
+results$R2n_std <- NA
+# Check
+results
+
+# for loop to populate these two columns
+
+for (i in 1:length(individuals)) {
+  
+  # Assign data to the generic variable
+  thisbobcat <- bobcats_ltraj[[i]] 
+  
+  # Then we need to get rid of all NA values in the respective column
+  R2nNAs <- which(is.na(thisbobcat$R2n)==TRUE)
+  
+  # If statement: if there are some NAs, we remove them, if not, we don't do anything.
+  if (length(R2nNAs)>0) {
+    thisbobcat <- thisbobcat[-R2nNAs,]
+  }
+  
+  # calculate statistics and put them into the results data frame, in row i
+  results$R2n_mean[i] <- mean(thisbobcat$R2n)
+  results$R2n_std[i] <- sd(thisbobcat$R2n)
+  
+} # end for 
+
+# Check 
+results
+
+# now plotting the R2n
+
+# Bobcat 1 
+ggplot(bobcats_ltraj[[1]], aes(x=date, y=R2n)) + geom_point(color = "darkred") + 
+  theme_bw() + xlab("Date") + ylab("R2n") + ggtitle("Net square displacement over time for bobcat 1")
+
+# Bobcat 2 
+ggplot(bobcats_ltraj[[2]], aes(x=date, y=R2n)) + geom_point(color = "darkred") + 
+  theme_bw() + xlab("Date") + ylab("R2n") + ggtitle("Net square displacement over time for bobcat 2")
+
+# Bobcat 3 
+ggplot(bobcats_ltraj[[3]], aes(x=date, y=R2n)) + geom_point(color = "darkred") + 
+  theme_bw() + xlab("Date") + ylab("R2n") + ggtitle("Net square displacement over time for bobcat 3")
+
+
+# export
+bobcat1_netsquared <- ggplot(bobcats_ltraj[[1]], aes(x=date, y=R2n)) + geom_point() + 
+  theme_bw() + xlab("Date") + ylab("R2n") + ggtitle("Net square displacement over time for bobcat 1")
+
+bobcat2_netsquared <- ggplot(bobcats_ltraj[[2]], aes(x=date, y=R2n)) + geom_point() + 
+  theme_bw() + xlab("Date") + ylab("R2n") + ggtitle("Net square displacement over time for bobcat 2")
+
+bobcat3_netsquared <- ggplot(bobcats_ltraj[[3]], aes(x=date, y=R2n)) + geom_point() + 
+  theme_bw() + xlab("Date") + ylab("R2n") + ggtitle("Net square displacement over time for bobcat 3")
+
+
+# Export into figure:
+png(filename="Bobcat_NetSquared_Plots.png")
+# Put the three plots in a gridded display with 3 rows and 2 column
+
+grid.newpage()
+pushViewport(viewport(layout=grid.layout(3, 2)))
+
+print(bobcat1_netsquared, vp=viewport(layout.pos.row = 1, layout.pos.col = 1))
+print(bobcat2_netsquared, vp=viewport(layout.pos.row = 1, layout.pos.col = 2))
+# Add any additional bobcat plots if necessary
+
+dev.off()
+
+
+
+
+
+##### Part 3 - circular plots for turning angle and heading for all individuals and calculate their circular mean and circular sd ######
+
+# Take one bobcat
+thisbobcat <- bobcats_ltraj[[1]]
+
+# Convert relative angle from radians into degrees
+thisbobcat$turningAngle <- thisbobcat$rel.angle * 180 / pi
+# Check
+head(thisbobcat)
+
+# Build a circular plot
+angleplot <- ggplot(thisbobcat, aes(x=turningAngle)) + geom_histogram(binwidth=2, fill="darkred", color = "black")+coord_polar(start = pi)+
+  theme_bw()+scale_x_continuous(limits = c(-180,180),breaks=c(-180,-90,0,90,180))+xlab("Turning Angle")+ylab("Count")+
+  ggtitle("Turning angle for bobcat 1")
+
+# Export as a figure
+png(filename="Bobcat1_TurningAngle.png")
+print(angleplot)
+
+# Remove NAs 
+turnNAs <- which(is.na(thisbobcat$turningAngle)==TRUE)
+
+# If statement: if there are some NAs, we remove them, if not, we don't do anything.
+if (length(turnNAs)>0) {
+  thisbobcat <- thisbobcat[-turnNAs,]
+}
+
+# Calculate statistics - because angles are circular, we need to use circular mean and circular std, from package circular
+turningAngle_mean <- mean(circular(thisbobcat$turningAngle))
+turningAngle_std <- sd(circular(thisbobcat$turningAngle))
+
+# add two columns to results data frame
+results$turningAngle_mean <- NA
+results$turningAngle_std <- NA
+
+
+# Check 
+results
+
+
+# Update results data frame
+# Assuming results has an existing row for coyote 1
+results$turningAngle_mean[1] <- turningAngle_mean
+results$turningAngle_std[1] <- turningAngle_std
+
+# Check updated results
+print(results)
+
+# For loop for all the bobcats
+for (i in 1:length(individuals)) {
+  
+  thisbobcat <- bobcats_ltraj[[i]]
+  
+  # Convert relative angle from radians into degrees
+  thisbobcat$turningAngle <- thisbobcat$rel.angle * 180 / pi
+  
+  # Build a circular plot
+  angleplot <- ggplot(thisbobcat, aes(x=turningAngle)) + geom_histogram(binwidth=2, fill = "darkred", color = "black")+coord_polar(start = pi)+
+    theme_bw()+scale_x_continuous(limits = c(-180,180),breaks=c(-180,-90,0,90,180))+xlab("Turning Angle")+ylab("Count")+
+    ggtitle(paste("Turning angle for bobcat ",i, sep=""))
+  
+  # Export as a figure
+  png(filename=paste("Bobcat",i,"_TurningAngle.png",sep=""))
+  print(angleplot)
+  dev.off()
+  
+  # Remove NAs 
+  turnNAs <- which(is.na(thisbobcat$turningAngle)==TRUE)
+  
+  #  If statement: if there are some NAs, we remove them, if not, we don't do anything.
+  if (length(turnNAs)>0) {
+    thisbobcat <- thisbobcat[-turnNAs,]
+  }
+  
+  # Calculate statistics - because angles are circular,  use circular mean and circular std.
+  # This means that we first transform the vector into a circular object and then calculate mean/std.
+  results$turningAngle_mean[i] <- mean(circular(thisbobcat$turningAngle))
+  results$turningAngle_std[i] <- sd(circular(thisbobcat$turningAngle))
+  
+} # end for
+# Check 
+results
+
+
+##calculate now the heading (the angle of the compass direction of movement)
+
+thisbobcat <- bobcats_ltraj[[2]]
+
+# Check for x and y coordinates
+head(thisbobcat)
+
+# called x and y. 
+
+# need to know the number of points in the trajectory, by checking the length of one of the coordinates
+nPoints <- length(thisbobcat$x)
+
+# add a new field for the heading to thisbobcat data frame
+thisbobcat$heading <- NA
+
+# For loop through the trajectory, but not to the end, we skip the final point!
+
+for (i in 1:(nPoints-1)) {
+  
+  # read the coordinates from two consecutive points, i and i+1
+  x1 <- thisbobcat$x[i]
+  x2 <- thisbobcat$x[i+1]
+  y1 <- thisbobcat$y[i]
+  y2 <- thisbobcat$y[i+1]
+  
+  # calculate the heading as arctan of the two values, plus convert to degrees
+  thisbobcat$heading[i] <- atan2((x2-x1),(y2-y1)) * 180 / pi
+  
+}
+
+# Build a circular plot
+angleplot <- ggplot(thisbobcat, aes(x=heading)) + geom_histogram(binwidth=2, fill = "darkred", color = "black")+coord_polar(start = pi)+
+  theme_bw()+scale_x_continuous(limits = c(-180,180),breaks=c(-180,-90,0,90,180))+
+  xlab("Heading")+ylab("Count")+ggtitle("Heading for bobcat 2")
+
+# Export as a figure
+png(filename="Bobcat2_Heading.png")
+print(angleplot)
+
+# Remove NAs - there will be at least one, for the last point through which we didn't loop
+headingNAs <- which(is.na(thisbobcat$heading)==TRUE)
+
+# If there are some NAs, we remove them, if not, we don't do anything.
+if (length(headingNAs)>0) {
+  thisbobcat <- thisbobcat[-headingNAs,]
+}
+
+# Calculate statistics - because angles are circular, we need to use circular mean and circular std, from package circular
+heading_mean <- mean(circular(thisbobcat$heading))
+heading_std <- sd(circular(thisbobcat$heading))
+
+
+# add two columns to the results data frame 
+results$heading_mean <- NA
+results$heading_std <- NA
+# Check what happened
+results
+
+# Here start the nested loops
+
+# External For loop for all the bobcats - note the index is now called j!
+for (j in 1:length(individuals)) {
+  
+  thisbobcat <- bobcats_ltraj[[j]]
+  
+  # need to know the number of points in the trajectory, by checking the length of one of the coordinates.
+  nPoints <- length(thisbobcat$x)
+  
+  # add a new field for the heading to this data frame
+  thisbobcat$heading <- NA
+  
+  # Internal for loop through the trajectory, but not to the end, we skip the final point!
+  # This loop has index i
+  for (i in 1:(nPoints-1)) {
+    
+    # Let's read the coordinates from two consecutive points, i and i+1
+    x1 <- thisbobcat$x[i]
+    x2 <- thisbobcat$x[i+1]
+    y1 <- thisbobcat$y[i]
+    y2 <- thisbobcat$y[i+1]
+    
+    # And calculate the heading as arctan of the two values, plus convert to degrees
+    thisbobcat$heading[i] <- atan2((x2-x1),(y2-y1)) * 180 / pi
+    
+  } # end for i
+  
+  # Build a circular plot
+  angleplot <- ggplot(thisbobcat, aes(x=heading)) + geom_histogram(binwidth=2, fill = "red", color = "black")+coord_polar(start = pi)+
+    theme_bw()+scale_x_continuous(limits = c(-180,180),breaks=c(-180,-90,0,90,180))+
+    xlab("Heading")+ylab("Count")+ggtitle(paste("Heading for bobcat ",j,sep=""))
+  
+  # Export as a figure
+  png(filename=paste("Bobcat",j,"_Heading.png",sep=""))
+  print(angleplot)
+  dev.off()
+  
+  # Remove NAs - there will be at least one, for the last point through which we didn't loop
+  headingNAs <- which(is.na(thisbobcat$heading)==TRUE)
+  
+  # If there are some NAs, we remove them, if not, we don't do anything.
+  if (length(headingNAs)>0) {
+    thisbobcat <- thisbobcat[-headingNAs,]
+  }
+  
+  # Calculate statistics - because angles are circular, we need to use circular mean and circular std
+  results$heading_mean[j] <- mean(circular(thisbobcat$heading))
+  results$heading_std[j] <- sd(circular(thisbobcat$heading))
+  
+} # end for j
+# Check results
+results
+
+dev.off()
+
+
+
+#### Part 4 - Radius of Gyration ####
+
+# Add a column for gyration to the results data frame
+results$gyration <- NA
+
+# For loop to calculate gyration for each individual
+for (i in 1:length(individuals)) {
+  
+  # Assign data to the generic variable
+  thisbobcat <- bobcats_ltraj[[i]] 
+  
+  # Find the number of points in this trajectory
+  noPoints <- length(thisbobcat$x)
+  
+  # Calculate the mean centre of all locations
+  centreX <- sum(thisbobcat$x) / noPoints
+  centreY <- sum(thisbobcat$y) / noPoints
+  
+  # Distance of each point to (centreX, centreY)
+  thisbobcat$distTocentre <- sqrt((centreX - thisbobcat$x)^2 + (centreY - thisbobcat$y)^2)
+  
+  # Check for NA values in the `distTocentre` column
+  distNAs <- which(is.na(thisbobcat$distTocentre) == TRUE)
+  
+  # If there are NAs, remove them
+  if (length(distNAs) > 0) {
+    thisbobcat <- thisbobcat[-distNAs,]
+  }
+  
+  # Calculate the radius of gyration
+  gyration <- sqrt(sum(thisbobcat$distTocentre) / noPoints)
+  
+  # Populate the gyration column in the results data frame
+  results$gyration[i] <- gyration
+  
+} # end for
+
+# Check the results
+results
+
+
+#time series plots of distance to the center for all 
+# Bobcat 1
+thisbobcat <- bobcats_ltraj[[1]]
+noPoints <- length(thisbobcat$x)
+centreX <- sum(thisbobcat$x) / noPoints
+centreY <- sum(thisbobcat$y) / noPoints
+thisbobcat$distTocentre <- sqrt((centreX - thisbobcat$x)^2 + (centreY - thisbobcat$y)^2)
+
+gyration_plot_1 <- ggplot(thisbobcat, aes(x = date, y = distTocentre)) + geom_line(color = "darkred") + 
+  theme_bw() + xlab("Date") + ylab("Distance to Center (m)") + ggtitle("Distance to the Center for Bobcat 1")
+print(gyration_plot_1)
+# Export as a figure
+png(filename="Bobcat1_Gyration_TimeSeries.png")
+print(gyration_plot_1) 
+dev.off()
+
+
+# Bobcat 2
+thisbobcat <- bobcats_ltraj[[2]]
+noPoints <- length(thisbobcat$x)
+centreX <- sum(thisbobcat$x) / noPoints
+centreY <- sum(thisbobcat$y) / noPoints
+thisbobcat$distTocentre <- sqrt((centreX - thisbobcat$x)^2 + (centreY - thisbobcat$y)^2)
+
+gyration_plot_2 <- ggplot(thisbobcat, aes(x = date, y = distTocentre)) + geom_line(color = "darkred") + 
+  theme_bw() + xlab("Date") + ylab("Distance to Center (m)") + ggtitle("Distance to the Center for Bobcat 2")
+print(gyration_plot_2)
+png(filename="Bobcat2_Gyration_TimeSeries.png")
+print(gyration_plot_2) 
+dev.off()
+
+
+
+# Bobcat 3
+thisbobcat <- bobcats_ltraj[[3]]
+noPoints <- length(thisbobcat$x)
+centreX <- sum(thisbobcat$x) / noPoints
+centreY <- sum(thisbobcat$y) / noPoints
+thisbobcat$distTocentre <- sqrt((centreX - thisbobcat$x)^2 + (centreY - thisbobcat$y)^2)
+
+gyration_plot_3 <- ggplot(thisbobcat, aes(x = date, y = distTocentre)) + geom_line(color = "darkred") + 
+  theme_bw() + xlab("Date") + ylab("Distance to Center (m)") + ggtitle("Distance to the Center for Bobcat 3")
+print(gyration_plot_3)
+png(filename="Bobcat3_Gyration_TimeSeries.png")
+print(gyration_plot_3) 
+dev.off()
+
+
+
+
+
+
+##########PART TWO ###########
+install.packages('adehabitatHR')
+install.packages('adehabitatLT')
+install.packages('sf')
+install.packages('scales')
+install.packages('grid')
+install.packages('gridExtra')
+install.packages('terra')
+
+
+library(adehabitatHR) # for space use
+library(sf) # for dealing with spatial data
+library(scales) # makes polygons transparent in plotting
+library(grid) # for creating grids in figures
+library(gridExtra) # for creating grids in figures
+library(terra) # for manipulating raster data
+library(adehabitatLT) # for ltraj objects
+
+bobcats <- read.csv('bobcats_CleanData_projected_EPSG26911.csv')
+head(bobcats)
+
+#to check for the names of columns with spatial coordinates
+names(bobcats)
+
+# They are called "X" and "Y"
+
+# selecting the important information from the dataset: bobcat identifier, geographic and temporal attributes
+bobcats_sel <- cbind.data.frame(bobcats$individual.local.identifier, bobcats$X, bobcats$Y, bobcats$timestamp, bobcats$POSIX)
+# and to fix those column names
+names(bobcats_sel) <- c('ID','X','Y','timestamp','POSIX')
+
+#then we create an sf object, using the coordinate names and the projection (which we saved as part of filename)
+bobcats_sf <- st_as_sf(bobcats_sel, coords = c("X", "Y"), crs = 'EPSG:26911')
+
+# and finally it is transformed into a Spatial Data Points object
+bobcats_sp <- as_Spatial(bobcats_sf)
+
+########Part 1 - Calculate Minimum Convex Polygon#####
+# The mcp function needs to know which column of the input data is the ID of the animal - in our case
+# this is the first column. So this is what we specify in the call.
+# telling the mcp funtion which column the bobcat ID is in - here it is in the first column
+# then calculating MCP for our bobcats looking at 95% of all points. 
+bobcats_mcp <- mcp(bobcats_sp[,1], percent = 95)
+
+# Examine output
+bobcats_mcp
+
+# plotting the MCPs
+plot(bobcats_mcp)
+
+#all the bobcats are visible together and fit a similar scale
+
+# plotting MCP for bobcat 1 as a transparent polygon (set by parameter alpha)
+plot(bobcats_mcp, col = alpha(1:5, 0.5))
+# and then add the points
+points(bobcats_sp, col = as.factor(bobcats_sp@data$ID), pch = 16)
+dev.off()
+#to export all five MCPs as one .shp we first convert them in a sf object with st_as_sf
+st_write(st_as_sf(bobcats_mcp), "bobcats_mcp1.shp")
+
+#mapping work in QGIS happening from here
+
+
+
+
+###LoCoH
+# Run Adaptive LoCoH
+
+#didn't really end up using this bit 
+#Inspect the distances between points using the nearest-neighbor distances
+#using library(sp)
+dists <- spDists(bobcats_sp, longlat = FALSE)
+hist(dists, breaks = 50, main = "Histogram of Point Distances", xlab = "Distance")
+# Add x and y axes
+axis(1)  # Adds x-axis
+axis(2)  # Adds y-axis
+#end of 'this bit'
+
+# "ID" is in the first column, so we specify it in the grouping
+bobcats_alocoh <- LoCoH.a(bobcats_sp[,1], a = 3000) # adjust `a` parameter as needed
+
+#bobcats_mcp <- mcp(bobcats_sp[,1], percent = 95)
+
+
+# Examine the output
+summary(bobcats_alocoh)
+
+# Plot Adaptive LoCoH
+#plot(bobcats_mcp)
+
+plot(bobcats_alocoh)
+#, col = rainbow(length(bobcats_alocoh$id)))
+
+
+#bobcats_alocoh <- as(bobcats_alocoh, "SpatialPolygonsDataFrame")
+
+#extra step needed to extract these hulls using the getverticeshr() function from the adehabitatHR package
+#library(adehabitatHR)
+# Extract the LoCoH hulls as SpatialPolygonsDataFrame
+bobcats_alocoh_spdf <- getverticeshr(bobcats_alocoh)
+
+
+plot(bobcats_alocoh_spdf, col = alpha(1:5, 0.5))
+# Add points to visualize original locations
+points(bobcats_sp, col = as.factor(bobcats_sp@data$ID), pch = 16)
+
+# Convert SpatialPolygonsDataFrame to sf object and write to a shapefile using sf library 
+st_write(st_as_sf(bobcats_alocoh_spdf), "bobcats_alocoh1.shp")
+
+
+
+
+
+#####Part 2 - Calculating the home ranges and core areas from KDE density#####
+
+#to be able to identify specific bobcats
+individuals <- unique(bobcats$individual.local.identifier)
+
+# Select only data of this bobcat from the Spatial Data Points Object
+bobcat1 <- bobcats_sp[which(as.data.frame(bobcats_sp)$ID==individuals[1]),]
+bobcat2 <- bobcats_sp[which(as.data.frame(bobcats_sp)$ID==individuals[2]),]
+bobcat3 <- bobcats_sp[which(as.data.frame(bobcats_sp)$ID==individuals[3]),]
+
+
+#first we optimize the bandwidth 
+
+#for bobcat 1 
+# Calculate KDE using the reference bandwith
+kde_ref <- kernelUD(bobcat1[,1],h='href')
+
+# Calculate KDE using the LSCV (least squares cross-validation) optimisation (this takes longer)
+kde_lscv <- kernelUD(bobcat1[,1],h='LSCV')
+
+
+# plotting the two surfaces
+# The output is a list with one item per bobcat, so we need to plot the first element of the list, indicated by double square brackets.
+# We are also choosing display colours, the terrain colours in this case
+#reference first 
+plot(kde_ref[[1]],col=rev(terrain.colors(n=100)))
+#then LSCV
+plot(kde_lscv[[1]],col=rev(terrain.colors(n=100)))
+
+# and plotting the optimisation graph
+plotLSCV(kde_lscv)
+
+
+
+
+### KDE with different values for grid and extent and plot the results
+
+#again, need to identify the ID column, the first column in bobcat1_sp
+#same4all parameter = all surfaces should have the same extent
+#and smaller number of cells 
+#UD = Utilisation Distribution 
+bobcats_kde <- kernelUD(bobcats_sp[,1],h='href', grid=500, extent=0.2, same4all=TRUE)                          
+
+# Plot the result
+plot(bobcats_kde[[1]])
+
+plot(bobcats_kde[[2]])
+
+
+# Create rasters from the kde output using the rast function from package terra using for loop 
+for (i in 1:(length(individuals)-1)) {
+  # Create a raster
+  r <- rast(as(bobcats_kde[[i]], "SpatialPixelsDataFrame")) 
+  # Save it as geotiff
+  writeRaster(r, filename = paste('bobcat',i+1,'_kde.tif',sep=""), overwrite=TRUE)
+}
+
+#home ranges and core areas from a KDE
+
+# The rest
+bobcats_kde_hr95 <- getverticeshr(bobcats_kde,percent=95)
+bobcats_kde_hr50 <- getverticeshr(bobcats_kde,percent=50)
+
+# plotting
+plot(bobcats_kde_hr95)
+plot(bobcats_kde_hr50)
+
+# The home ranges and core areas are SpatialPolgyonDataFrames, so we can export these as shapefiles.
+st_write(st_as_sf(bobcats_kde_hr95), "Bobcats_HR95.shp")
+st_write(st_as_sf(bobcats_kde_hr50), "Bobcats_HR50.shp")
+
+# outputs 
+bobcats_kde_hr95
+bobcats_kde_hr50
+
+# Convert to a data frame 
+bobcats_kde_hr50_df <- as.data.frame(bobcats_kde_hr50)
+write.csv(bobcats_kde_hr50_df, "bobcats_kde_hr50.csv", row.names = FALSE)
+
+# Convert to a data frame 
+bobcats_kde_hr95_df <- as.data.frame(bobcats_kde_hr95)
+write.csv(bobcats_kde_hr95_df, "bobcats_kde_hr95.csv", row.names = FALSE)
+
+#the end :)
